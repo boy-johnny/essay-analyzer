@@ -4,7 +4,7 @@ import os
 import re
 import dotenv
 import plotly.graph_objects as go
-from typing import Dict, Optional, List, Union
+from typing import Dict, Optional, List, Union, Generator
 from datetime import datetime
 
 dotenv.load_dotenv()
@@ -33,12 +33,6 @@ if "current_scores" not in st.session_state:
 def save_chat_history(question: str, answer: str, feedback: str, scores: Optional[Dict[str, int]] = None) -> None:
     """
     保存對話歷史記錄
-
-    Args:
-        question (str): 題目
-        answer (str): 答案
-        feedback (str): AI 回饋
-        scores (Optional[Dict[str, int]]): 評分結果
     """
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     chat_record = {
@@ -56,9 +50,6 @@ def save_chat_history(question: str, answer: str, feedback: str, scores: Optiona
 def display_scores(scores: Dict[str, int]) -> None:
     """
     顯示詳細的評分結果
-
-    Args:
-        scores (Dict[str, int]): 評分結果字典
     """
     st.write("### 詳細評分")
     total_score = 0
@@ -68,19 +59,11 @@ def display_scores(scores: Dict[str, int]) -> None:
     st.write("---")
     st.write(f"### 總分: {total_score} / 25 分")
 
-def get_feedback(question: str, answer: str) -> str:
+def get_feedback_stream(question: str, answer: str) -> Generator[str, None, None]:
     """
-    呼叫 Gemini LLM，根據題目與用戶答案，回傳批改意見、分數與標準答案。
-
-    Args:
-        question (str): 申論題題目
-        answer (str): 用戶回答內容
-
-    Returns:
-        str: LLM 的回饋內容
-
-    Raises:
-        Exception: 當 LLM 呼叫失敗時拋出異常
+    【新函式】
+    呼叫 Gemini LLM，以串流方式回傳批改意見。
+    這是一個生成器 (Generator) 函式。
     """
     try:
         prompt = f"""
@@ -113,21 +96,18 @@ def get_feedback(question: str, answer: str) -> str:
         "語言與表達": 2
         }}
         """
-        response = llm.predict(prompt)
-        return response
+        # 使用 .stream() 方法代替 .predict()
+        for chunk in llm.stream(prompt):
+            yield chunk.content
     except Exception as e:
         st.error(f"獲取回饋時發生錯誤: {str(e)}")
-        raise
+        # 在串流中也可以拋出錯誤
+        yield f"錯誤: {str(e)}"
+
 
 def extract_scores_from_json(feedback: str) -> Optional[Dict[str, int]]:
     """
     從回傳的文字中提取 JSON 格式分數
-
-    Args:
-        feedback (str): LLM 回饋內容
-
-    Returns:
-        Optional[Dict[str, int]]: 解析出的分數字典，解析失敗則返回 None
     """
     try:
         match = re.search(r"\{[\s\S]*?\}", feedback)
@@ -141,13 +121,6 @@ def extract_scores_from_json(feedback: str) -> Optional[Dict[str, int]]:
 def create_radar_chart(scores: List[int], categories: List[str]) -> go.Figure:
     """
     創建雷達圖
-
-    Args:
-        scores (List[int]): 各項分數列表
-        categories (List[str]): 各項指標名稱列表
-
-    Returns:
-        go.Figure: Plotly 圖表物件
     """
     # 雷達圖需要首尾相連
     scores = scores + scores[:1]
@@ -158,7 +131,7 @@ def create_radar_chart(scores: List[int], categories: List[str]) -> go.Figure:
         layout=go.Layout(
             polar=dict(radialaxis=dict(visible=True, range=[0, 5])),
             showlegend=False,
-            margin=dict(l=30, r=30, t=30, b=30)  # 調整邊距使圖表更緊湊
+            margin=dict(l=30, r=30, t=30, b=30)
         )
     )
     return fig
@@ -184,10 +157,9 @@ def display_chat_history() -> None:
             st.write(chat["answer"])
             if chat["scores"]:
                 st.write("**評分：**")
-                total_score = 0
+                total_score = sum(chat["scores"].values())
                 for category, score in chat["scores"].items():
                     st.write(f"{category}: {score}/5 分")
-                    total_score += score
                 st.write(f"**總分**: {total_score}/25 分")
             st.write("**回饋：**")
             clean_feedback = re.sub(r"\{.*?\}", "", chat["feedback"], flags=re.DOTALL).strip()
@@ -195,77 +167,59 @@ def display_chat_history() -> None:
 
 def main() -> None:
     """
-    Streamlit 主程式，負責用戶互動與顯示批改結果
+    Streamlit 主程式
     """
-    # 設置頁面配置
-    st.set_page_config(
-        page_title="AI 申論題批改老師",
-        page_icon="📝",
-        layout="wide"
-    )
-
-    # 顯示歷史對話記錄在側邊欄
+    st.set_page_config(page_title="AI 申論題批改老師", page_icon="📝", layout="wide")
     display_chat_history()
 
-    # 主要內容區域
     st.title("你的 AI 申論題批改老師 📝")
     st.write("Hello, 我是你的 AI 申論題批改老師")
     st.write("我會根據你的答案給你專業的批改意見，並給你具體的改進建議。")
 
-    # 使用 columns 來創建兩欄布局
     col1, col2 = st.columns([2, 1])
 
     with col1:
         question = st.text_area("請輸入申論題題目：", height=100)
         answer = st.text_area("請輸入你的答案：", height=200)
 
-        # 根據當前狀態顯示不同的按鈕
         if st.session_state.current_feedback is None:
             if st.button("送出批改", type="primary"):
                 if not question or not answer:
                     st.warning("請輸入題目與答案")
                 else:
-                    try:
-                        with st.spinner("AI 批改中..."):
-                            feedback = get_feedback(question, answer)
-                            st.session_state.current_feedback = feedback
-                            st.session_state.current_scores = extract_scores_from_json(feedback)
-                        st.rerun()  # 重新運行以更新界面
-                    except Exception as e:
-                        st.error(f"批改過程發生錯誤: {str(e)}")
+                    st.subheader("AI 批改建議")
+                    # 【修改處】使用 st.write_stream 來顯示即時回饋
+                    with st.spinner("AI 批改中..."):
+                        # st.write_stream 會回傳完整的字串，我們需要它來解析分數
+                        full_feedback = st.write_stream(get_feedback_stream(question, answer))
+                    
+                    # 串流結束後，用完整的字串來處理分數和儲存狀態
+                    st.session_state.current_feedback = full_feedback
+                    st.session_state.current_scores = extract_scores_from_json(full_feedback)
+                    st.rerun() # 重新執行以顯示分數和圖表
         else:
+            # 這部分是顯示結果，邏輯保持不變
+            st.subheader("AI 批改建議")
+            clean_feedback = re.sub(r"\{.*?\}", "", st.session_state.current_feedback, flags=re.DOTALL).strip()
+            st.write(clean_feedback)
+
             col_save, col_retry = st.columns(2)
             with col_save:
                 if st.button("保存紀錄", type="primary"):
-                    save_chat_history(
-                        question, 
-                        answer, 
-                        st.session_state.current_feedback,
-                        st.session_state.current_scores
-                    )
-                    st.rerun()  # 重新運行以更新界面
+                    save_chat_history(question, answer, st.session_state.current_feedback, st.session_state.current_scores)
+                    st.rerun()
             with col_retry:
                 if st.button("重新批改"):
                     st.session_state.current_feedback = None
                     st.session_state.current_scores = None
-                    st.rerun()  # 重新運行以更新界面
+                    st.rerun()
 
-    # 顯示批改結果
-    if st.session_state.current_feedback:
-        with col2:
-            if st.session_state.current_scores:
-                st.subheader("評分雷達圖")
-                fig = create_radar_chart(
-                    scores=list(st.session_state.current_scores.values()),
-                    categories=list(st.session_state.current_scores.keys())
-                )
-                st.plotly_chart(fig, use_container_width=True)
-                display_scores(st.session_state.current_scores)
-
-        with col1:
-            st.subheader("AI 批改建議")
-            clean_feedback = re.sub(r"\{.*?\}", "", st.session_state.current_feedback, flags=re.DOTALL).strip()
-            st.write(clean_feedback)
+    with col2:
+        if st.session_state.current_scores:
+            st.subheader("評分雷達圖")
+            fig = create_radar_chart(list(st.session_state.current_scores.values()), list(st.session_state.current_scores.keys()))
+            st.plotly_chart(fig, use_container_width=True)
+            display_scores(st.session_state.current_scores)
 
 if __name__ == "__main__":
     main()

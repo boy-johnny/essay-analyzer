@@ -5,6 +5,7 @@ import re
 import dotenv
 import plotly.graph_objects as go
 from typing import Dict, Optional, List, Union
+from datetime import datetime
 
 dotenv.load_dotenv()
 
@@ -21,6 +22,51 @@ llm = ChatGoogleGenerativeAI(model="gemini-1.5-pro", google_api_key=GOOGLE_API_K
 # 五項指標名稱
 CATEGORIES: List[str] = ["切題性", "結構與邏輯", "專業與政策理解", "批判與建議具體性", "語言與表達"]
 
+# 初始化 session state
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
+if "current_feedback" not in st.session_state:
+    st.session_state.current_feedback = None
+if "current_scores" not in st.session_state:
+    st.session_state.current_scores = None
+
+def save_chat_history(question: str, answer: str, feedback: str, scores: Optional[Dict[str, int]] = None) -> None:
+    """
+    保存對話歷史記錄
+
+    Args:
+        question (str): 題目
+        answer (str): 答案
+        feedback (str): AI 回饋
+        scores (Optional[Dict[str, int]]): 評分結果
+    """
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    chat_record = {
+        "timestamp": timestamp,
+        "question": question,
+        "answer": answer,
+        "feedback": feedback,
+        "scores": scores
+    }
+    st.session_state.chat_history.append(chat_record)
+    # 清除當前回饋，重置狀態
+    st.session_state.current_feedback = None
+    st.session_state.current_scores = None
+
+def display_scores(scores: Dict[str, int]) -> None:
+    """
+    顯示詳細的評分結果
+
+    Args:
+        scores (Dict[str, int]): 評分結果字典
+    """
+    st.write("### 詳細評分")
+    total_score = 0
+    for category, score in scores.items():
+        st.write(f"**{category}**: {score} / 5 分")
+        total_score += score
+    st.write("---")
+    st.write(f"### 總分: {total_score} / 25 分")
 
 def get_feedback(question: str, answer: str) -> str:
     """
@@ -73,7 +119,6 @@ def get_feedback(question: str, answer: str) -> str:
         st.error(f"獲取回饋時發生錯誤: {str(e)}")
         raise
 
-
 def extract_scores_from_json(feedback: str) -> Optional[Dict[str, int]]:
     """
     從回傳的文字中提取 JSON 格式分數
@@ -93,7 +138,6 @@ def extract_scores_from_json(feedback: str) -> Optional[Dict[str, int]]:
         st.error(f"解析分數 JSON 失敗: {e}")
     return None
 
-
 def create_radar_chart(scores: List[int], categories: List[str]) -> go.Figure:
     """
     創建雷達圖
@@ -111,47 +155,117 @@ def create_radar_chart(scores: List[int], categories: List[str]) -> go.Figure:
 
     fig = go.Figure(
         data=[go.Scatterpolar(r=scores, theta=categories, fill="toself", name="分數")],
-        layout=go.Layout(polar=dict(radialaxis=dict(visible=True, range=[0, 5])), showlegend=False),
+        layout=go.Layout(
+            polar=dict(radialaxis=dict(visible=True, range=[0, 5])),
+            showlegend=False,
+            margin=dict(l=30, r=30, t=30, b=30)  # 調整邊距使圖表更緊湊
+        )
     )
     return fig
 
+def display_chat_history() -> None:
+    """
+    在側邊欄顯示歷史對話記錄
+    """
+    st.sidebar.subheader("歷史對話記錄 📚")
+    
+    if not st.session_state.chat_history:
+        st.sidebar.info("還沒有任何對話記錄")
+        st.sidebar.warning("注意：對話記錄僅在當前瀏覽器會話中保存")
+        return
+    
+    st.sidebar.warning("注意：對話記錄僅在當前瀏覽器會話中保存")
+    
+    for idx, chat in enumerate(reversed(st.session_state.chat_history)):
+        with st.sidebar.expander(f"對話 {len(st.session_state.chat_history) - idx} - {chat['timestamp']}", expanded=False):
+            st.write("**題目：**")
+            st.write(chat["question"])
+            st.write("**答案：**")
+            st.write(chat["answer"])
+            if chat["scores"]:
+                st.write("**評分：**")
+                total_score = 0
+                for category, score in chat["scores"].items():
+                    st.write(f"{category}: {score}/5 分")
+                    total_score += score
+                st.write(f"**總分**: {total_score}/25 分")
+            st.write("**回饋：**")
+            clean_feedback = re.sub(r"\{.*?\}", "", chat["feedback"], flags=re.DOTALL).strip()
+            st.write(clean_feedback)
 
 def main() -> None:
     """
     Streamlit 主程式，負責用戶互動與顯示批改結果
     """
+    # 設置頁面配置
+    st.set_page_config(
+        page_title="AI 申論題批改老師",
+        page_icon="📝",
+        layout="wide"
+    )
+
+    # 顯示歷史對話記錄在側邊欄
+    display_chat_history()
+
+    # 主要內容區域
     st.title("你的 AI 申論題批改老師 📝")
     st.write("Hello, 我是你的 AI 申論題批改老師")
     st.write("我會根據你的答案給你專業的批改意見，並給你具體的改進建議。")
 
-    question = st.text_area("請輸入申論題題目：")
-    answer = st.text_area("請輸入你的答案：")
+    # 使用 columns 來創建兩欄布局
+    col1, col2 = st.columns([2, 1])
 
-    feedback = None
-    if st.button("送出批改"):
-        if not question or not answer:
-            st.warning("請輸入題目與答案")
+    with col1:
+        question = st.text_area("請輸入申論題題目：", height=100)
+        answer = st.text_area("請輸入你的答案：", height=200)
+
+        # 根據當前狀態顯示不同的按鈕
+        if st.session_state.current_feedback is None:
+            if st.button("送出批改", type="primary"):
+                if not question or not answer:
+                    st.warning("請輸入題目與答案")
+                else:
+                    try:
+                        with st.spinner("AI 批改中..."):
+                            feedback = get_feedback(question, answer)
+                            st.session_state.current_feedback = feedback
+                            st.session_state.current_scores = extract_scores_from_json(feedback)
+                        st.rerun()  # 重新運行以更新界面
+                    except Exception as e:
+                        st.error(f"批改過程發生錯誤: {str(e)}")
         else:
-            try:
-                with st.spinner("AI 批改中..."):
-                    feedback = get_feedback(question, answer)
-                st.subheader("AI 批改結果")
-
-                # 先顯示雷達圖
-                scores_dict = extract_scores_from_json(feedback)
-                if scores_dict:
-                    fig = create_radar_chart(
-                        scores=list(scores_dict.values()), categories=list(scores_dict.keys())
+            col_save, col_retry = st.columns(2)
+            with col_save:
+                if st.button("保存紀錄", type="primary"):
+                    save_chat_history(
+                        question, 
+                        answer, 
+                        st.session_state.current_feedback,
+                        st.session_state.current_scores
                     )
-                    st.plotly_chart(fig)
+                    st.rerun()  # 重新運行以更新界面
+            with col_retry:
+                if st.button("重新批改"):
+                    st.session_state.current_feedback = None
+                    st.session_state.current_scores = None
+                    st.rerun()  # 重新運行以更新界面
 
-                # 顯示移除 JSON 後的回饋內容
-                # 使用正則表達式移除 JSON 部分
-                clean_feedback = re.sub(r"\{.*?\}", "", feedback, flags=re.DOTALL).strip()
-                st.write(clean_feedback)
-            except Exception as e:
-                st.error(f"批改過程發生錯誤: {str(e)}")
+    # 顯示批改結果
+    if st.session_state.current_feedback:
+        with col2:
+            if st.session_state.current_scores:
+                st.subheader("評分雷達圖")
+                fig = create_radar_chart(
+                    scores=list(st.session_state.current_scores.values()),
+                    categories=list(st.session_state.current_scores.keys())
+                )
+                st.plotly_chart(fig, use_container_width=True)
+                display_scores(st.session_state.current_scores)
 
+        with col1:
+            st.subheader("AI 批改建議")
+            clean_feedback = re.sub(r"\{.*?\}", "", st.session_state.current_feedback, flags=re.DOTALL).strip()
+            st.write(clean_feedback)
 
 if __name__ == "__main__":
     main()

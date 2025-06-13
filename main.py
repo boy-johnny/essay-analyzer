@@ -25,6 +25,10 @@ CATEGORIES: List[str] = ["切題性", "結構與邏輯", "專業與政策理解"
 # 初始化 session state
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
+if "current_feedback" not in st.session_state:
+    st.session_state.current_feedback = None
+if "current_scores" not in st.session_state:
+    st.session_state.current_scores = None
 
 def save_chat_history(question: str, answer: str, feedback: str, scores: Optional[Dict[str, int]] = None) -> None:
     """
@@ -45,6 +49,24 @@ def save_chat_history(question: str, answer: str, feedback: str, scores: Optiona
         "scores": scores
     }
     st.session_state.chat_history.append(chat_record)
+    # 清除當前回饋，重置狀態
+    st.session_state.current_feedback = None
+    st.session_state.current_scores = None
+
+def display_scores(scores: Dict[str, int]) -> None:
+    """
+    顯示詳細的評分結果
+
+    Args:
+        scores (Dict[str, int]): 評分結果字典
+    """
+    st.write("### 詳細評分")
+    total_score = 0
+    for category, score in scores.items():
+        st.write(f"**{category}**: {score} / 5 分")
+        total_score += score
+    st.write("---")
+    st.write(f"### 總分: {total_score} / 25 分")
 
 def get_feedback(question: str, answer: str) -> str:
     """
@@ -133,7 +155,11 @@ def create_radar_chart(scores: List[int], categories: List[str]) -> go.Figure:
 
     fig = go.Figure(
         data=[go.Scatterpolar(r=scores, theta=categories, fill="toself", name="分數")],
-        layout=go.Layout(polar=dict(radialaxis=dict(visible=True, range=[0, 5])), showlegend=False),
+        layout=go.Layout(
+            polar=dict(radialaxis=dict(visible=True, range=[0, 5])),
+            showlegend=False,
+            margin=dict(l=30, r=30, t=30, b=30)  # 調整邊距使圖表更緊湊
+        )
     )
     return fig
 
@@ -145,7 +171,10 @@ def display_chat_history() -> None:
     
     if not st.session_state.chat_history:
         st.sidebar.info("還沒有任何對話記錄")
+        st.sidebar.warning("注意：對話記錄僅在當前瀏覽器會話中保存")
         return
+    
+    st.sidebar.warning("注意：對話記錄僅在當前瀏覽器會話中保存")
     
     for idx, chat in enumerate(reversed(st.session_state.chat_history)):
         with st.sidebar.expander(f"對話 {len(st.session_state.chat_history) - idx} - {chat['timestamp']}", expanded=False):
@@ -155,8 +184,11 @@ def display_chat_history() -> None:
             st.write(chat["answer"])
             if chat["scores"]:
                 st.write("**評分：**")
+                total_score = 0
                 for category, score in chat["scores"].items():
-                    st.write(f"{category}: {score}")
+                    st.write(f"{category}: {score}/5 分")
+                    total_score += score
+                st.write(f"**總分**: {total_score}/25 分")
             st.write("**回饋：**")
             clean_feedback = re.sub(r"\{.*?\}", "", chat["feedback"], flags=re.DOTALL).strip()
             st.write(clean_feedback)
@@ -187,37 +219,53 @@ def main() -> None:
         question = st.text_area("請輸入申論題題目：", height=100)
         answer = st.text_area("請輸入你的答案：", height=200)
 
-    feedback = None
-    if st.button("送出批改", type="primary"):
-        if not question or not answer:
-            st.warning("請輸入題目與答案")
+        # 根據當前狀態顯示不同的按鈕
+        if st.session_state.current_feedback is None:
+            if st.button("送出批改", type="primary"):
+                if not question or not answer:
+                    st.warning("請輸入題目與答案")
+                else:
+                    try:
+                        with st.spinner("AI 批改中..."):
+                            feedback = get_feedback(question, answer)
+                            st.session_state.current_feedback = feedback
+                            st.session_state.current_scores = extract_scores_from_json(feedback)
+                        st.rerun()  # 重新運行以更新界面
+                    except Exception as e:
+                        st.error(f"批改過程發生錯誤: {str(e)}")
         else:
-            try:
-                with st.spinner("AI 批改中..."):
-                    feedback = get_feedback(question, answer)
-                st.subheader("AI 批改結果")
+            col_save, col_retry = st.columns(2)
+            with col_save:
+                if st.button("保存紀錄", type="primary"):
+                    save_chat_history(
+                        question, 
+                        answer, 
+                        st.session_state.current_feedback,
+                        st.session_state.current_scores
+                    )
+                    st.rerun()  # 重新運行以更新界面
+            with col_retry:
+                if st.button("重新批改"):
+                    st.session_state.current_feedback = None
+                    st.session_state.current_scores = None
+                    st.rerun()  # 重新運行以更新界面
 
-                # 提取分數並顯示雷達圖
-                scores_dict = extract_scores_from_json(feedback)
-                if scores_dict:
-                    with col2:
-                        st.subheader("評分雷達圖")
-                        fig = create_radar_chart(
-                            scores=list(scores_dict.values()),
-                            categories=list(scores_dict.keys())
-                        )
-                        st.plotly_chart(fig, use_container_width=True)
+    # 顯示批改結果
+    if st.session_state.current_feedback:
+        with col2:
+            if st.session_state.current_scores:
+                st.subheader("評分雷達圖")
+                fig = create_radar_chart(
+                    scores=list(st.session_state.current_scores.values()),
+                    categories=list(st.session_state.current_scores.keys())
+                )
+                st.plotly_chart(fig, use_container_width=True)
+                display_scores(st.session_state.current_scores)
 
-                # 顯示詳細回饋
-                with col1:
-                    clean_feedback = re.sub(r"\{.*?\}", "", feedback, flags=re.DOTALL).strip()
-                    st.write(clean_feedback)
-
-                # 保存對話記錄
-                save_chat_history(question, answer, feedback, scores_dict)
-
-            except Exception as e:
-                st.error(f"批改過程發生錯誤: {str(e)}")
+        with col1:
+            st.subheader("AI 批改建議")
+            clean_feedback = re.sub(r"\{.*?\}", "", st.session_state.current_feedback, flags=re.DOTALL).strip()
+            st.write(clean_feedback)
 
 if __name__ == "__main__":
     main()

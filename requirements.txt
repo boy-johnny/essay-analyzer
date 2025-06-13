@@ -1,9 +1,21 @@
-# requirements.txt
-streamlit==1.32.0
-python-dotenv==1.0.1
-plotly==6.1.2
-langchain-core==0.1.22
-langchain-google-genai==0.0.7
-google-generativeai==0.3.1
-supabase==2.3.0
-extra-streamlit-components>=0.1.60  # 用於處理認證狀態
+# --- 主框架 ---
+# 升級到 1.33.0 以上以滿足 st-theme 的要求
+streamlit~=1.35.0
+
+# --- 後端與資料庫 ---
+# 使用一個穩定的 firebase-admin 版本
+firebase-admin~=6.5.0
+
+# --- AI 與 Langchain 核心套件 ---
+# 將所有 langchain 相關套件升級到一個較新且一致的系列，以解決版本衝突
+langchain~=0.2.0
+langchain-google-genai~=1.0.0
+langchain-openai~=0.1.7
+langchain-experimental~=0.0.60
+
+# --- 其他 AI SDK ---
+# 根據 langchain-openai 的要求，升級 openai 套件版本
+openai>=1.23.0,<2.0.0
+
+# --- 圖表繪製 ---
+plotly~=5.22.0

@@ -13,9 +13,10 @@ langchain-google-genai~=1.0.0
 langchain-openai~=0.1.7
 langchain-experimental~=0.0.60
 
-# --- 其他 AI SDK ---
-# 根據 langchain-openai 的要求，升級 openai 套件版本
-openai>=1.23.0,<2.0.0
 
 # --- 圖表繪製 ---
 plotly~=5.22.0
+
+# --- Google Cloud & 圖片處理 (修正處) ---
+google-cloud-vision
+Pillow

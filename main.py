@@ -1,10 +1,32 @@
 import streamlit as st
-import os
+import io
 import json
+import os
+# --- 【全新加入】設定 Google 憑證的程式碼區塊 ---
+# 這個區塊必須在所有 google cloud 相關套件被呼叫前執行
+
+# 檢查是否在 Streamlit Cloud 環境中 (透過偵測 st.secrets 是否存在)
+if hasattr(st, 'secrets'):
+    # 從 Streamlit Secrets 獲取憑證字典
+    gcp_creds_dict = dict(st.secrets["firebase_credentials"])
+    
+    # 將字典轉換為 JSON 字串
+    gcp_creds_json = json.dumps(gcp_creds_dict)
+    
+    # 將 JSON 字串寫入一個暫存檔案中
+    with open("google_creds.json", "w") as f:
+        f.write(gcp_creds_json)
+        
+    # 設定環境變數，指向我們剛剛建立的暫存檔案
+    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "google_creds.json"
+# ----------------------------------------------------
+
+
 import re
 from datetime import datetime
 from typing import Dict, Optional, List, Generator
-import base64
+from PIL import Image
+from google.cloud import vision
 import plotly.graph_objects as go
 
 st.set_page_config(page_title="AI 申論題批改老師", page_icon="📝", layout="wide")
@@ -32,6 +54,16 @@ def initialize_gemini():
     return ChatGoogleGenerativeAI(model="gemini-1.5-pro", google_api_key=st.secrets["GOOGLE_API_KEY"])
 
 llm = initialize_gemini()
+
+@st.cache_resource
+def initialize_vision_client():
+    # 當環境變數 GOOGLE_APPLICATION_CREDENTIALS 設定好後，這裡不需要任何參數
+    return vision.ImageAnnotatorClient()
+
+db = initialize_firebase_admin()
+llm = initialize_gemini()
+vision_client = initialize_vision_client() # 初始化 Vision 客戶端
+
 
 # --- 狀態與全域變數 ---
 if 'answer_text' not in st.session_state:
@@ -244,17 +276,47 @@ def display_chat_history() -> None:
             clean_feedback = re.sub(r"\{.*?\}", "", chat["feedback"], flags=re.DOTALL).strip()
             st.write(clean_feedback)
 
+# --- 【全新函式】核心功能函式 ---
+def preprocess_image(image_bytes: bytes, max_size: tuple = (1200, 1200)) -> bytes:
+    """使用 Pillow 對圖片進行預處理"""
+    try:
+        img = Image.open(io.BytesIO(image_bytes))
+        img.thumbnail(max_size, Image.Resampling.LANCZOS)
+        output_buffer = io.BytesIO()
+        img.save(output_buffer, format='JPEG', quality=90)
+        return output_buffer.getvalue()
+    except Exception as e:
+        st.error(f"圖片預處理失敗: {e}")
+        return image_bytes
+
+def get_text_from_image_by_vision(image_bytes: bytes) -> str:
+    """【取代舊函式】使用 Google Cloud Vision 進行 OCR"""
+    try:
+        # 1. 預處理圖片
+        processed_bytes = preprocess_image(image_bytes)
+        
+        # 2. 呼叫 Vision API
+        image = vision.Image(content=processed_bytes)
+        response = vision_client.text_detection(image=image)
+
+        if response.error.message:
+            raise Exception(response.error.message)
+
+        return response.full_text_annotation.text if response.full_text_annotation else "圖片中未偵測到文字。"
+    except Exception as e:
+        st.error(f"Cloud Vision OCR 辨識失敗：{e}")
+        return "圖片辨識時發生錯誤。"
+
 # --- 主程式 UI 與邏輯 ---
-def main() -> None:
-    # --- 側邊欄驗證邏輯 ---
+def main() -> None: 
+   # --- 側邊欄驗證邏輯 ---
     with st.sidebar:
         st.header("使用者")
         is_logged_in = simple_auth_ui()
-        
-        # 根據登入狀態顯示歷史紀錄
         if is_logged_in:
             display_firestore_history(st.session_state.user_uid)
-        display_chat_history()
+            
+    
 
     # --- 主畫面 ---
     st.title("你的 AI 申論題批改老師 📝")
@@ -274,18 +336,24 @@ def main() -> None:
             if picture:
                 with st.spinner("照片文字辨識中..."):
                     image_bytes = picture.getvalue()
-                    base64_image = base64.b64encode(image_bytes)
-                    st.session_state.answer_text = get_text_from_image_by_gemini(base64_image)
+                    st.session_state.answer_text = get_text_from_image_by_vision(image_bytes)
                     st.rerun()
 
         with tab2:
-            uploaded_file = st.file_uploader("選擇圖片檔案", type=['png', 'jpg', 'jpeg'])
-            if uploaded_file:
-                with st.spinner("檔案文字辨識中..."):
-                    image_bytes = uploaded_file.getvalue()
-                    base64_image = base64.b64encode(image_bytes)
-                    st.session_state.answer_text = get_text_from_image_by_gemini(base64_image)
-                    st.rerun()
+            uploaded_files = st.file_uploader("選擇一張或多張圖片檔案", type=['png', 'jpg', 'jpeg'], accept_multiple_files=True)
+            if uploaded_files:
+                  # 迭代處理所有上傳的檔案
+                all_texts = []
+                with st.spinner(f"正在辨識 {len(uploaded_files)} 張圖片..."):
+                    for uploaded_file in uploaded_files:
+                        image_bytes = uploaded_file.getvalue()
+                        # 【修改】呼叫新的 Cloud Vision 函式
+                        text = get_text_from_image_by_vision(image_bytes)
+                        all_texts.append(text)
+                
+                # 將所有辨識出的文字合併到答案框中
+                st.session_state.answer_text = "\n\n---\n\n".join(all_texts)
+
 
         # --- 中央統一的答案輸入框 ---
         st.subheader("請在此確認或手動輸入您的最終答案：")
@@ -329,7 +397,6 @@ def main() -> None:
                             "scores": scores
                         })
                         
-                        st.rerun()
             else:
                 # 顯示批改結果
                 st.subheader("🤖 AI 批改建議")

@@ -1,7 +1,6 @@
 # --- 主框架 ---
 # 升級到 1.33.0 以上以滿足 st-theme 的要求
 streamlit~=1.35.0
-streamlit-authenticator~=1.1.0
 
 # --- 後端與資料庫 ---
 # 使用一個穩定的 firebase-admin 版本

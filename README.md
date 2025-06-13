@@ -14,7 +14,7 @@ This is an intelligent essay grading application built with Streamlit, powered b
 
 *(It is recommended to place a screenshot or a GIF of the application here to quickly demonstrate its functionality.)*
 
-![Application Screenshot or GIF](https://i.imgur.com/your-screenshot.png)
+![Application Screenshot or GIF](./preview.png)
 
 ---
 
